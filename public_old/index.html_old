@@ -1,0 +1,13 @@
+<html>
+<head>
+<title>Country and States </title>
+<script src="client.js"></script>
+</head>
+<body>
+<label for="country_code">Country Code:</label>
+<input ype="text" id="country_code" />
+<button id="country_btn">Query</button>
+<p id="country_name"></p>
+<div id="state_lists"><table></table></div>
+</body>
+</html>

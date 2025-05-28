@@ -1,0 +1,215 @@
+"use strict";
+(function () {
+  let map;
+  let markers = [];
+  let polylines = [];
+  let lastFetchedRoute = null;
+
+  window.addEventListener("load", init);
+
+  function init() {
+    document.getElementById("search-country").addEventListener("click", fetchCountryData);
+    document.getElementById("search-airline").addEventListener("click", fetchAirlineData);
+    document.getElementById("search-airport").addEventListener("click", fetchAirportData);
+    document.getElementById("search-pair").addEventListener("click", fetchAirportPairData);
+    document.getElementById("show-map-route").addEventListener("click", drawRouteOnMap);
+
+    map = L.map('map').setView([20, 0], 2);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+  }
+
+  async function fetchCountryData() {
+    const country = document.getElementById("country-input").value.trim();
+    const queryParams = new URLSearchParams({ country });
+
+    const airlineRes = await fetch(`/airlines?${queryParams}`);
+    const airportRes = await fetch(`/airports?${queryParams}`);
+
+    if (airlineRes.ok && airportRes.ok) {
+      const airlines = await airlineRes.json();
+      const airports = await airportRes.json();
+      document.getElementById("country-results").innerHTML = `
+        <h3>Airlines:</h3><ul>${airlines.map(a => `<li>${a.name}</li>`).join('')}</ul>
+        <h3>Airports:</h3><ul>${airports.map(a => `<li>${a.name}</li>`).join('')}</ul>
+      `;
+    } else {
+      document.getElementById("country-results").innerHTML = "Error fetching country data.";
+    }
+  }
+
+  async function fetchAirlineData() {
+    const iata = document.getElementById("airline-iata-input").value.trim();
+    const icao = document.getElementById("airline-icao-input").value.trim();
+    const queryParams = new URLSearchParams({ iata, icao });
+
+    const response = await fetch(`/airlines/search?${queryParams}`);
+    if (response.ok) {
+      const airlines = await response.json();
+      if (airlines.length > 0) {
+        const airlineCode = iata || icao;
+        const airlineName = airlines[0].name;
+
+        document.getElementById("airline-results").innerHTML = `
+          <h3>Airline Found: ${airlineName}</h3>
+          <p>Fetching all routes...</p>
+        `;
+
+        fetchAllRoutesForAirline(airlineCode);
+      } else {
+        document.getElementById("airline-results").innerHTML = "No airline found.";
+      }
+    } else {
+      document.getElementById("airline-results").innerHTML = "Error fetching airline data.";
+    }
+  }
+
+  async function fetchAllRoutesForAirline(airlineCode) {
+    const queryParams = new URLSearchParams({ airline: airlineCode });
+    const response = await fetch(`/routes/airline-routes?${queryParams}`);
+
+    if (response.ok) {
+      const routes = await response.json();
+      document.getElementById("airline-results").innerHTML += `
+        <h3>Routes:</h3>
+        <ul>${routes.map(r => `<li>${r.departure_name} (${r.departure}) ➔ ${r.arrival_name} (${r.arrival})</li>`).join('')}</ul>
+      `;
+    } else {
+      document.getElementById("airline-results").innerHTML += `<p>Error fetching routes for airline.</p>`;
+    }
+  }
+
+  async function fetchAirportData() {
+    const iata = document.getElementById("airport-iata-input").value.trim();
+    const icao = document.getElementById("airport-icao-input").value.trim();
+    const queryParams = new URLSearchParams({ iata, icao });
+
+    const airportInfoPromise = fetch(`/airports/temp?${queryParams}`);
+    const departureRoutesPromise = fetch(`/routes/arrival-airport?dep=${iata}`);
+    const arrivalRoutesPromise = fetch(`/routes/arriving-at-airport?arr=${iata}`);
+
+    const [airportInfo, departureRoutes, arrivalRoutes] = await Promise.all([
+      airportInfoPromise,
+      departureRoutesPromise,
+      arrivalRoutesPromise
+    ]);
+
+    if (airportInfo.ok && departureRoutes.ok && arrivalRoutes.ok) {
+      const info = await airportInfo.json();
+      const departures = await departureRoutes.json();
+      const arrivals = await arrivalRoutes.json();
+
+      document.getElementById("airport-results").innerHTML = `
+        <h3>Airport Info:</h3>
+        <p>Name: ${info.name}, City: ${info.city}, Country: ${info.country}</p>
+        <p>High Temp: ${info.high}°C, Low Temp: ${info.low}°C</p>
+
+        <h3>Routes Originating from this Airport:</h3>
+        <ul>
+          ${departures.map(r => `<li>To: ${r.arrival_name} (${r.arrival_iata})</li>`).join('')}
+        </ul>
+
+        <h3>Routes Arriving at this Airport:</h3>
+        <ul>
+          ${arrivals.map(r => `<li>From: ${r.departure_name} (${r.departure})</li>`).join('')}
+        </ul>
+      `;
+
+      L.marker([info.latitude, info.longitude])
+        .addTo(map)
+        .bindPopup(`<b>${info.name}</b><br>${info.city}, ${info.country}`)
+        .openPopup();
+    } else {
+      document.getElementById("airport-results").innerHTML = "Error fetching airport data.";
+    }
+  }
+
+  async function fetchAirportPairData() {
+    const dep = document.getElementById("departure-airport").value.trim();
+    const arr = document.getElementById("arrival-airport").value.trim();
+    const queryParams = new URLSearchParams({ dep, arr });
+
+    const routeRes = await fetch(`/routes?${queryParams}`);
+
+    if (!routeRes.ok) {
+      document.getElementById("pair-results").innerHTML = "Error fetching airport pair data.";
+      lastFetchedRoute = null;
+      return;
+    }
+
+    const data = await routeRes.json();
+
+    if (!data.routes || data.routes.length === 0) {
+      document.getElementById("pair-results").innerHTML = "No routes found between selected airports.";
+      lastFetchedRoute = null;
+      return;
+    }
+
+    // 🛠 Smartly find departure and arrival info
+    const depData = data.routes.find(r => r.dep_iata === dep);
+    const arrData = data.routes.find(r => r.arr_iata === arr);
+
+    if (!depData || !arrData) {
+      document.getElementById("pair-results").innerHTML = "Could not find both departure and arrival airports.";
+      lastFetchedRoute = null;
+      return;
+    }
+
+    // 🛠 Manually combine the two data into one route object
+    lastFetchedRoute = {
+      dep_iata: depData.dep_iata,
+      dep_lat: depData.dep_lat,
+      dep_lon: depData.dep_lon,
+      arr_iata: arrData.arr_iata,
+      arr_lat: arrData.arr_lat,
+      arr_lon: arrData.arr_lon,
+      airline: depData.airline || arrData.airline || 'Unknown',
+      planes: depData.planes || arrData.planes || 'Unknown'
+    };
+
+    document.getElementById("pair-results").innerHTML = `
+      <h3>Distance: ${data.distanceInKm.toFixed(2)} km</h3>
+      <h3>Available Routes:</h3>
+      <ul>${data.routes.map(r => `<li>Airline: ${r.airline} | Planes: ${r.planes}</li>`).join('')}</ul>
+    `;
+  }
+
+  function drawRouteOnMap() {
+    if (!lastFetchedRoute) {
+      alert("Please first click 'Find Routes & Distance'.");
+      return;
+    }
+
+    if (
+      !lastFetchedRoute.dep_lat || !lastFetchedRoute.dep_lon ||
+      !lastFetchedRoute.arr_lat || !lastFetchedRoute.arr_lon
+    ) {
+      alert("Missing coordinates to draw route.");
+      return;
+    }
+
+    markers.forEach(marker => map.removeLayer(marker));
+    polylines.forEach(line => map.removeLayer(line));
+    markers = [];
+    polylines = [];
+
+    const depMarker = L.marker([lastFetchedRoute.dep_lat, lastFetchedRoute.dep_lon])
+      .addTo(map)
+      .bindPopup(`<b>Departure: ${lastFetchedRoute.dep_iata}</b>`);
+    const arrMarker = L.marker([lastFetchedRoute.arr_lat, lastFetchedRoute.arr_lon])
+      .addTo(map)
+      .bindPopup(`<b>Arrival: ${lastFetchedRoute.arr_iata}</b>`);
+    markers.push(depMarker);
+    markers.push(arrMarker);
+
+    const routeLine = L.polyline([
+      [lastFetchedRoute.dep_lat, lastFetchedRoute.dep_lon],
+      [lastFetchedRoute.arr_lat, lastFetchedRoute.arr_lon]
+    ], { color: 'blue' }).addTo(map);
+    polylines.push(routeLine);
+
+    map.fitBounds(routeLine.getBounds());
+  }
+})();
+
