@@ -6,7 +6,7 @@ const express = require('express');
 const app = express();
 const axios = require('axios');
 app.use(express.json());
-const PORT = 8001;
+const PORT = process.env.PORT || 8001;
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
