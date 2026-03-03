@@ -1,2 +1,5 @@
 *_*
 public/*_*
+
+*.env
+node_modules/
